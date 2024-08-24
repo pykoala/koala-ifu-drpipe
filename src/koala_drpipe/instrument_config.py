@@ -12,10 +12,11 @@ AAOMEGA_GRATINGS = {
 
 
 class AAOMegaConfig(object):
-    def __init__(self, arm, grating, dichroic, *args, **kwargs):
+    def __init__(self, arm, grating, dichroic, exptime, *args, **kwargs):
         self.arm = arm
         self.grating = grating
         self.dichroic = dichroic
+        self.exptime = exptime
 
     @classmethod
     def from_header(cls, header):
@@ -23,8 +24,9 @@ class AAOMegaConfig(object):
         arm = header["SPECTID"]
         grating = header["GRATID"]
         dichroic = header["DICHROIC"]
+        exptime = header["EXPOSED"]
 
-        return cls(arm, grating, dichroic)
+        return cls(arm, grating, dichroic, exptime)
 
     @classmethod
     def from_fits(cls, path, extension=0):
@@ -33,7 +35,8 @@ class AAOMegaConfig(object):
 
     def show_config(self):
         vprint(f"AAOMega configuration:\n - Arm: {self.arm}"
-               + f"\n - Grating: {self.grating}\n - Dichroic: {self.dichroic}")
+               + f"\n - Grating: {self.grating}\n - Dichroic: {self.dichroic}"
+               + f"\n - Exp. Time: {self.exptime}")
 
 
 class KOALAConfig(object):
@@ -45,7 +48,7 @@ class KOALAConfig(object):
     def from_header(cls, header):
         """Build a configuration using the information provided in the header."""
         rotator_pa = header["TEL_PA"]
-        mode = "Wide" # FIXME
+        mode = header.get("FOV", "N/A")
         return cls(mode, rotator_pa)
 
     @classmethod
@@ -69,6 +72,8 @@ class ObservationConfig(object):
         self.utend = kwargs.get("utend")
         self.utmjd = kwargs.get("utmjd")
         self.zenital_distance = kwargs.get("zdstart")
+        self.ver_2dfdr = kwargs.get("ver_2dfdr")
+        self.is_raw = kwargs.get("is_raw")
     
     @classmethod
     def from_header(cls, header):
@@ -77,7 +82,12 @@ class ObservationConfig(object):
 
         obs_args = {"mean_ra": header["MEANRA"], "mean_dec": header["MEANDEC"],
                     "utdate": header["UTDATE"], "utmjd": header["UTMJD"], 
-                    "utstart": header["UTSTART"], "utend": header["UTEND"]}
+                    "utstart": header["UTSTART"], "utend": header["UTEND"],
+                    "is_raw": False}
+        obs_args["ver_2dfdr"] = header.get('2DFDRVER', None)
+        if obs_args["ver_2dfdr"] is None:
+            obs_args["is_raw"] = True
+
         return cls(aaomega_config, koala_config, **obs_args)
 
     @classmethod
@@ -87,6 +97,14 @@ class ObservationConfig(object):
     
     def show_config(self):
         vprint(f"Observation configuration:\n - Mean Ra/Dec: {self.mean_ra}/{self.mean_dec}"
-               + f"\n - UT date: {self.utdate}")
+               + f"\n - UT date: {self.utdate}"
+               + f"\n - UT start: {self.utstart}"
+               + f"\n - Is raw file: {self.is_raw}"
+               + f"\n - 2dfdr version: {self.ver_2dfdr}")
         self.aaomega_config.show_config()
         self.koala_config.show_config()
+
+
+def group_observations(list_of_obs_config, criteria):
+    pass
+
