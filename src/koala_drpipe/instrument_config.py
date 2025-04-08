@@ -1,10 +1,14 @@
+from datetime import datetime
 
-from pykoala import vprint
+from pykoala.instruments import koala_ifu
 from astropy.io import fits
 
+from koala_drpipe import vprint
+
 def print_aaomega_gratings():
-    print("Blue arm gratings: ", "\n".join(["580V" , "1500V" ,"1700B" , "3200B" , "2500V"]))
-    print("Red arm gratings: ", "\n".join(["385R","1000R","2000R", "1000I", "1700D","1700I"]))
+    """List the possible AAOmega VPH gratings."""
+    vprint("Blue arm gratings: ", "\n".join(["580V" , "1500V" ,"1700B" , "3200B" , "2500V"]))
+    vprint("Red arm gratings: ", "\n".join(["385R","1000R","2000R", "1000I", "1700D","1700I"]))
 
 AAOMEGA_GRATINGS = {
     "blue_arm": ["580V" , "1500V" ,"1700B" , "3200B" , "2500V"],
@@ -12,6 +16,34 @@ AAOMEGA_GRATINGS = {
 
 
 class AAOMegaConfig(object):
+    """AAOmega configuration."""
+    @property
+    def arm(self) -> str:
+        """AAOmega arm."""
+        return self._arm
+    
+    @arm.setter
+    def arm(self, value):
+        self._arm = value.lower()
+
+    @property
+    def grating(self) -> str:
+        """AAOmega VPH grating."""
+        return self._grating
+
+    @grating.setter
+    def grating(self, value):
+        self._grating = value.upper()
+
+    @property
+    def dichroic(self):
+        """AAOmega dichroich."""
+        return self._dichroich
+    
+    @dichroic.setter
+    def dichroic(self, value):
+        self._dichroich = value
+
     def __init__(self, arm, grating, dichroic, exptime, *args, **kwargs):
         self.arm = arm
         self.grating = grating
@@ -30,10 +62,12 @@ class AAOMegaConfig(object):
 
     @classmethod
     def from_fits(cls, path, extension=0):
+        """Initialise the configuration from a raw FITS file."""
         header = fits.getheader(path, extension)
         return cls.from_header(header)
 
     def show_config(self):
+        """Display the configuration."""
         vprint(f"AAOMega configuration:\n - Arm: {self.arm}"
                + f"\n - Grating: {self.grating}\n - Dichroic: {self.dichroic}"
                + f"\n - Exp. Time: {self.exptime}")
@@ -62,14 +96,15 @@ class KOALAConfig(object):
 
 
 class ObservationConfig(object):
-    def __init__(self, aaomega_config, koala_config, mean_ra, mean_dec, utdate, **kwargs):
+    def __init__(self, aaomega_config, koala_config, mean_ra, mean_dec,
+                 utstart, utend,**kwargs):
         self.aaomega_config = aaomega_config
         self.koala_config = koala_config
         self.mean_ra, self.mean_dec = mean_ra, mean_dec
-        self.utdate = utdate
+
         # Convert to python datetime
-        self.utstart = kwargs.get("utstart")
-        self.utend = kwargs.get("utend")
+        self.utstart = utstart
+        self.utend = utend
         self.utmjd = kwargs.get("utmjd")
         self.zenital_distance = kwargs.get("zdstart")
         self.ver_2dfdr = kwargs.get("ver_2dfdr")
@@ -81,8 +116,13 @@ class ObservationConfig(object):
         koala_config = KOALAConfig.from_header(header)
 
         obs_args = {"mean_ra": header["MEANRA"], "mean_dec": header["MEANDEC"],
-                    "utdate": header["UTDATE"], "utmjd": header["UTMJD"], 
-                    "utstart": header["UTSTART"], "utend": header["UTEND"],
+                    "utmjd": header["UTMJD"], 
+                    "utstart": datetime.fromisoformat(
+                        header["UTDATE"].replace(":", "-")
+                        + " " + header["UTSTART"]),
+                    "utend": datetime.fromisoformat(
+                        header["UTDATE"].replace(":", "-")
+                        + " " + header["UTEND"]),
                     "is_raw": False}
         obs_args["ver_2dfdr"] = header.get('2DFDRVER', None)
         if obs_args["ver_2dfdr"] is None:
@@ -97,8 +137,8 @@ class ObservationConfig(object):
     
     def show_config(self):
         vprint(f"Observation configuration:\n - Mean Ra/Dec: {self.mean_ra}/{self.mean_dec}"
-               + f"\n - UT date: {self.utdate}"
                + f"\n - UT start: {self.utstart}"
+               + f"\n - UT end: {self.utend}"
                + f"\n - Is raw file: {self.is_raw}"
                + f"\n - 2dfdr version: {self.ver_2dfdr}")
         self.aaomega_config.show_config()
