@@ -36,6 +36,13 @@ from pykoala.cubing import CubeInterpolator, build_wcs_from_rss
 from koala_drpipe import vprint
 from koala_drpipe import instrument_config
 
+def get_kwargs(config):
+    """Check if an input configuration has additional kwargs."""
+    if isinstance(config, dict):
+        kwargs = config["WaveOffsetCorrect"].get("kwargs", {})
+    else:
+        kwargs = {}
+    return kwargs
 
 class CalibrationSet(object):
     """Calibration data.
@@ -192,9 +199,11 @@ class CalibrationSet(object):
 
         else:
             telluric_corr = None
+            flux_cal_corr = None
 
         return cls(aaomega_config,
                    throughput_set=throughput_corr,
+                   atm_ext_corr=atm_ext_corr,
                    telluric_corr_set=telluric_corr,
                    flux_cal_corr_set=flux_cal_corr)
 
@@ -218,25 +227,24 @@ def create_throughput(config, workdir="."):
             instrument_config.koala_ifu.koala_rss(fl) for fl in config["rss_set"]]
         
         # Correct wavelength shifts when using Twilight exposures
-        if "WaveOffsetCorrect" in config and config["WaveOffsetCorrect"]:
+        if "WaveOffsetCorrect" in config:
+            kwargs = get_kwargs(config["WaveOffsetCorrect"])
             for ith, rss in enumerate(rss_set):
                 wave_corr, figures = TelluricWavelengthCorrection.from_rss(
-                    rss, plot=True)
+                    rss, **kwargs)
                 rss = wave_corr.apply(rss)
-                figures[0].savefig(
-                    os.path.join(
-                        workdir,
-                        f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_wave_offset.png"),
-                        dpi=200, bbox_inches="tight")
-                figures[1].savefig(
-                    os.path.join(
-                        workdir,
-                        f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_offset_fibre_map.png"),
-                        dpi=200, bbox_inches="tight")
-        if "kwargs" in config:
-            kwargs = config["kwargs"]
-        else:
-            kwargs = {}
+                if figures is not None:
+                    figures[0].savefig(
+                        os.path.join(
+                            workdir,
+                            f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_wave_offset.png"),
+                            dpi=200, bbox_inches="tight")
+                    figures[1].savefig(
+                        os.path.join(
+                            workdir,
+                            f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_offset_fibre_map.png"),
+                            dpi=200, bbox_inches="tight")
+        kwargs = get_kwargs(config)
         throughput_corr = ThroughputCorrection.from_rss(rss_set, **kwargs)
     return throughput_corr
 
@@ -249,21 +257,23 @@ def create_stellar_cal_set(config, throughput_corr=None, atm_ext_corr=None, work
         fl) for fl in config["rss_set"]]
     vprint(f"Number of input std. stars: {len(rss_set)}")
 
-    if "WaveOffsetCorrect" in config and config["WaveOffsetCorrect"]:
+    if "WaveOffsetCorrect" in config:
+        kwargs = get_kwargs(config["WaveOffsetCorrect"])
         for ith, rss in enumerate(rss_set):
             wave_corr, figures = TelluricWavelengthCorrection.from_rss(
-                rss, plot=True, median_smooth=10, pol_fit_deg=3)
+                rss, **kwargs)
             rss = wave_corr.apply(rss)
-            figures[0].savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_wavecorr_{ith}_rss_{rss.info['name']}_wave_offset.png"),
-                    dpi=200, bbox_inches="tight")
-            figures[1].savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_wavecorr_{ith}_rss_{rss.info['name']}_offset_fibre_map.png"),
-                    dpi=200, bbox_inches="tight")
+            if figures is not None:
+                figures[0].savefig(
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_wavecorr_{ith}_rss_{rss.info['name']}_wave_offset.png"),
+                        dpi=200, bbox_inches="tight")
+                figures[1].savefig(
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_wavecorr_{ith}_rss_{rss.info['name']}_offset_fibre_map.png"),
+                        dpi=200, bbox_inches="tight")
 
     if throughput_corr is not None:
         vprint("Applying ThroughputCorrection to RSS")
