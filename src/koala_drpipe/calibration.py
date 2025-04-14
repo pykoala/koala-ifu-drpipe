@@ -248,122 +248,128 @@ def create_throughput(config, workdir="."):
 def create_stellar_cal_set(config, throughput_corr=None, atm_ext_corr=None, workdir="."):
     """Build the calibration set from standard stars."""
     vprint("Preparing calibrations from standard stars")
-    rss_set = [instrument_config.koala_ifu.koala_rss(
-        fl) for fl in config["rss_set"]]
-    rss_config = [instrument_config.ObservationConfig.from_fits(
-        fl) for fl in config["rss_set"]]
-    vprint(f"Number of input std. stars: {len(rss_set)}")
+    if isinstance(config["rss_set"], list):
+        rss_set = [instrument_config.koala_ifu.koala_rss(fl) for fl in config["rss_set"]]
+        stars = {rss_set[0].info["name"]: rss_set}
+    else:
+        stars = {name: [instrument_config.koala_ifu.koala_rss(
+            fl) for fl in files] for name, files in config["rss_set"].items()}
 
-    # If requested, first correct for wavelength offset
-    if "WaveOffsetCorrect" in config:
-        kwargs = get_kwargs(config["WaveOffsetCorrect"])
-        for ith, rss in enumerate(rss_set):
-            wave_corr, figures = TelluricWavelengthCorrection.from_rss(
-                rss, **kwargs)
-            rss = wave_corr.apply(rss)
-            if figures is not None:
-                figures[0].savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_wavecorr_{ith}_rss_{rss.info['name']}_wave_offset.png"),
-                        dpi=200, bbox_inches="tight")
-                figures[1].savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_wavecorr_{ith}_rss_{rss.info['name']}_offset_fibre_map.png"),
-                        dpi=200, bbox_inches="tight")
+    # rss_config = [instrument_config.ObservationConfig.from_fits(
+    #     fl) for fl in config["rss_set"]]
+    vprint(f"Number of input std. stars: {len(stars)}")
+    star_cubes = []
+    for std_name, star_rss in stars.items():
+        # If requested, first correct for wavelength offset
 
-    if throughput_corr is not None:
-        vprint("Applying ThroughputCorrection to RSS")
-        for i in range(len(rss_set)):
-            rss_set[i] = throughput_corr.apply(rss_set[i])
+        for ith, rss in enumerate(star_rss):
+            if "WaveOffsetCorrect" in config:
+                wave_corr, figures = TelluricWavelengthCorrection.from_rss(
+                    rss, **get_kwargs(config["WaveOffsetCorrect"]))
+                rss = wave_corr.apply(rss)
+                if figures is not None:
+                    figures[0].savefig(
+                        os.path.join(
+                            workdir,
+                            f"{std_name}_std_wavecorr_{ith}_rss_wave_offset.png"),
+                            dpi=200, bbox_inches="tight")
+                    figures[1].savefig(
+                        os.path.join(
+                            workdir,
+                            f"{std_name}_std_wavecorr_{ith}_rss_offset_fibre_map.png"),
+                            dpi=200, bbox_inches="tight")
+            if throughput_corr is not None:
+                vprint("Applying ThroughputCorrection to RSS")
+                rss = throughput_corr.apply(rss)
+            if atm_ext_corr is not None:
+                vprint("Applying AtmosphericExtinctionCorrection to RSS")
+                rss = atm_ext_corr.apply(rss)
 
-    if atm_ext_corr is not None:
-        vprint("Applying AtmosphericExtinctionCorrection to RSS")
-        for i in range(len(rss_set)):
-            rss_set[i] = atm_ext_corr.apply(rss_set[i])
-
-    if config.get("SubstractBackground", True):
-        for ith in range(len(rss_set)):
-            skymodel = SkyFromObject(rss_set[ith], bckgr_estimator='mad',
+            if config.get("SubstractBackground", True):
+                
+                skymodel = SkyFromObject(rss, bckgr_estimator='mad',
                                          source_mask_nsigma=3, remove_cont=False)
-            skycorrection = SkySubsCorrection(skymodel)
-            rss_set[ith], fig = skycorrection.apply(rss_set[ith], plot=True)
-            fig.savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_{ith}_rss_{rss_set[ith].info['name']}_sky_substract.png"),
-                    dpi=200, bbox_inches="tight")
+                skycorrection = SkySubsCorrection(skymodel)
+                rss, fig = skycorrection.apply(rss, plot=True)
+                fig.savefig(
+                    os.path.join(
+                        workdir,
+                        f"{std_name}_std_{ith}_rss_sky_substract.png"),
+                        dpi=200, bbox_inches="tight")
 
-    # Register the RSS
-    astrom_corr = AstrometryCorrection()
-    star_name = rss_set[0].info['name'].split()[0]
-    adr_corr_set = []
+        # Register the RSS
+        astrom_corr = AstrometryCorrection()
+        adr_corr_set = []
 
-    offsets, fig = astrom_corr.register_centroids(rss_set, object_name=star_name,
-                                            qc_plot=True, centroider='gauss')
-    fig.savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_{star_name}_register.png"),
-                    dpi=200, bbox_inches="tight")
-    for ith, (rss, offset) in enumerate(zip(rss_set, offsets)):
-        astrom_corr.apply(rss, offset=offset)
-        adr_pol_ra, adr_pol_dec, fig = get_adr(rss, max_adr=0.5, pol_deg=2,
-                                               plot=True)
-        adr_corr_set.append([adr_pol_ra, adr_pol_dec])
+        offsets, fig = astrom_corr.register_centroids(star_rss,
+                                                      object_name=std_name,
+                                                qc_plot=True, centroider='gauss')
         fig.savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_{star_name}_adr.png"),
-                    dpi=200, bbox_inches="tight")
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_{std_name}_register.png"),
+                        dpi=200, bbox_inches="tight")
 
-    wcs = build_wcs_from_rss(rss_set, spatial_pix_size= 0.5 * u.arcsec,
-                             spectra_pix_size=rss.wavelength[1] - rss.wavelength[0])
-    interpolator = CubeInterpolator(rss_set=rss_set, wcs=wcs, kernel_scale=1.0,
-                                    qc_plots=True)
-    cube = interpolator.build_cube(cube_info=dict(name=star_name))
-    interpolator.cube_plots["stack_cube"].savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_{star_name}_cube_qc.png"),
-                    dpi=200, bbox_inches="tight")
-    interpolator.cube_plots["weights"].savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_{star_name}_cube_weights.png"),
-                    dpi=200, bbox_inches="tight")
-    # Telluric correction
-    telluric_corr, fig = TelluricCorrection.from_model(cube, plot=True)
-    fig.savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_{cube.info['name']}_telluric_correction.png"),
-                    dpi=200, bbox_inches="tight")
-    cube = telluric_corr.apply(cube)
+        for ith, (rss, offset) in enumerate(zip(star_rss, offsets)):
+            astrom_corr.apply(rss, offset=offset)
+            adr_pol_ra, adr_pol_dec, fig = get_adr(rss, max_adr=0.5, pol_deg=2,
+                                                   plot=True)
+            adr_corr_set.append([adr_pol_ra, adr_pol_dec])
+            fig.savefig(
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_{std_name}_adr.png"),
+                        dpi=200, bbox_inches="tight")
+
+        wcs = build_wcs_from_rss(star_rss, spatial_pix_size= 0.5 * u.arcsec,
+                                spectra_pix_size=rss.wavelength[1] - rss.wavelength[0])
+        interpolator = CubeInterpolator(rss_set=star_rss, wcs=wcs, kernel_scale=1.0,
+                                        qc_plots=True)
+        cube = interpolator.build_cube(cube_info=dict(name=std_name))
+        interpolator.cube_plots["stack_cube"].savefig(
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_{std_name}_cube_qc.png"),
+                        dpi=200, bbox_inches="tight")
+        interpolator.cube_plots["weights"].savefig(
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_{std_name}_cube_weights.png"),
+                        dpi=200, bbox_inches="tight")
+        # Telluric correction
+        telluric_corr, fig = TelluricCorrection.from_model(cube, plot=True)
+        fig.savefig(
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_{cube.info['name']}_telluric_correction.png"),
+                        dpi=200, bbox_inches="tight")
+        cube = telluric_corr.apply(cube)
+        star_cubes.append(cube)
+
     # Flux calibration
     extract_args = dict(wave_range=None, wave_window=5, plot=True)
     response_params = dict(pol_deg=7, spline=False, median_filter_n=10,
                            plot=True)
 
     flux_cal_results, _, master_flux_corr = FluxCalibration.auto(
-        data=[cube],
-        calib_stars=[cube.info['name']],
+        data=star_cubes,
+        calib_stars=list(stars.keys()),
         fnames=None,
         extract_args=extract_args,
         response_params=response_params,
         combine=True)
 
-    flux_cal_results[cube.info['name']]['extraction']['figure'].savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_{cube.info['name']}_extraction.png"),
-                    dpi=200, bbox_inches="tight")
-    flux_cal_results[cube.info['name']]['response_fig'].savefig(
-                os.path.join(
-                    workdir,
-                    f"stdcalset_{cube.info['name']}_spectral_response.png"),
-                    dpi=200, bbox_inches="tight")
+    for name in stars.keys():
+        flux_cal_results[name]['extraction']['figure'].savefig(
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_{name}_extraction.png"),
+                        dpi=200, bbox_inches="tight")
+        flux_cal_results[name]['response_fig'].savefig(
+                    os.path.join(
+                        workdir,
+                        f"stdcalset_{name}_spectral_response.png"),
+                        dpi=200, bbox_inches="tight")
     return telluric_corr, master_flux_corr
 
 
