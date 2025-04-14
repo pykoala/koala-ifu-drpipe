@@ -162,11 +162,11 @@ class CalibrationSet(object):
         else:
              workdir="."
 
-        if "from_rss" in config["AAOmegaConfig"]:
-            aaomega_config = instrument_config.AAOMegaConfig.from_fits(
-                config["AAOmegaConfig"]["from_rss"])
-        else:
-            raise ValueError("User must include a configuration of AAOmega")
+        # if "from_rss" in config["AAOmegaConfig"]:
+        #     aaomega_config = instrument_config.AAOMegaConfig.from_fits(
+        #         config["AAOmegaConfig"]["from_rss"])
+        # else:
+        #     raise ValueError("User must include a configuration of AAOmega")
 
         # Initialise corrections
         if "ThroughputCorrection" in config["CalibrationSet"]:
@@ -199,7 +199,7 @@ class CalibrationSet(object):
             telluric_corr = None
             flux_cal_corr = None
 
-        return cls(aaomega_config,
+        return cls(None,
                    throughput_corr=throughput_corr,
                    atm_ext_corr=atm_ext_corr,
                    telluric_corr=telluric_corr,
