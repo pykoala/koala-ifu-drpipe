@@ -39,7 +39,7 @@ from koala_drpipe import instrument_config
 def get_kwargs(config):
     """Check if an input configuration has additional kwargs."""
     if isinstance(config, dict):
-        kwargs = config["WaveOffsetCorrect"].get("kwargs", {})
+        kwargs = config.get("kwargs", {})
     else:
         kwargs = {}
     return kwargs
@@ -64,68 +64,52 @@ class CalibrationSet(object):
         self._aaomega_config = value
 
     @property
-    def throughput_set(self) -> list:
+    def throughput_corr(self) -> ThroughputCorrection:
         """List of :class:`ThroughputCorrection`."""
-        return getattr(self, "_throughput_set", None)
+        return getattr(self, "_throughput_corr", None)
 
-    @throughput_set.setter
-    def throughput_set(self, value):
+    @throughput_corr.setter
+    def throughput_corr(self, value):
         if isinstance(value, ThroughputCorrection):
-            self._throughput_set = [value]
-        elif isinstance(value, list):
-            self._throughput_set = value
-        elif value is None:
-            return
+            self._throughput_corr = value
         else:
-            print(f"Unrecognized type {value.__class__}")
+            vprint(f"ThroughputCorrection not set")
 
     @property
-    def telluric_corr_set(self) -> list:
+    def telluric_corr(self) -> TelluricCorrection:
         """List of :class:`TelluricCorrection`."""
-        return self._telluric_corr_set
+        return self._telluric_corr
         
-    @telluric_corr_set.setter
-    def telluric_corr_set(self, value):
+    @telluric_corr.setter
+    def telluric_corr(self, value):
         if isinstance(value, TelluricCorrection):
-            self._telluric_corr_set = [value]
-        elif isinstance(value, list):
-            self._telluric_corr_set = value
-        elif value is None:
-            return
+            self._telluric_corr = value
         else:
-            print(f"Unrecognized type {value.__class__}")
+            vprint(f"TelluricCorrection not set")
 
     @property
-    def wave_corr_set(self) -> list:
+    def wave_corr(self) -> WavelengthCorrection:
         """List of :class:`WavelengthCorrection`."""
-        return self._wave_corr_set
+        return self._wave_corr
         
-    @wave_corr_set.setter
-    def wave_corr_set(self, value):
+    @wave_corr.setter
+    def wave_corr(self, value):
         if isinstance(value, WavelengthCorrection):
-            self._wave_corr_set = [value]
-        elif isinstance(value, list):
-            self._wave_corr_set = value
-        elif value is None:
-            return
+            self._wave_corr = value
         else:
-            print(f"Unrecognized type {value.__class__}")
+            vprint(f"WavelengthCorrection not set")
 
     @property
-    def flux_cal_corr_set(self) -> list:
+    def flux_cal_corr(self) -> FluxCalibration:
         """List of :class:`WavelengthCorrection`."""
-        return self._flux_cal_corr_set
+        return self._flux_cal_corr
         
-    @flux_cal_corr_set.setter
-    def flux_cal_corr_set(self, value):
+    @flux_cal_corr.setter
+    def flux_cal_corr(self, value):
         if isinstance(value, FluxCalibration):
-            self._flux_cal_corr_set = [value]
-        elif isinstance(value, list):
-            self._flux_cal_corr_set = value
-        elif value is None:
-            return
+            self._flux_cal_corr = value
         else:
-            print(f"Unrecognized type {value.__class__}")
+            vprint(f"FluxCalibration not set")
 
     @property
     def atm_ext_corr(self) -> list:
@@ -136,17 +120,31 @@ class CalibrationSet(object):
     def atm_ext_corr(self, value):
         if isinstance(value, AtmosphericExtCorrection):
             self._atm_ext_corr = value
-        elif value is None:
-            return
         else:
-            print(f"Unrecognized type {value.__class__}")
-
+            vprint(f"AtmosphericExtCorrection not set")
 
     def __init__(self, aaomega_config, **kwargs):
         self.aaomega_config = aaomega_config
-
         for key in kwargs.keys():
             setattr(self, key, kwargs[key])
+        if "correct_order" not in kwargs:
+            self.correct_order = ["throughput_corr", "telluric_corr",
+                                  "atm_ext_corr", "flux_cal_corr"]
+
+    def apply(self, rss, correct_order=None):
+        """Apply the calibrations to a set of RSS."""
+        if correct_order is None:
+            correct_order = self.correct_order
+        
+        for ith in range(len(rss)):
+            for corr_name in correct_order:
+                correction = getattr(self, corr_name, None)
+                if correction is not None:
+                    print(f"Applying correction {corr_name}")
+                    rss[ith] = correction.apply(rss[ith])
+                else:
+                    print(f"Correction {corr_name} not set")
+        return rss
 
     @classmethod
     def from_config_yml(cls, yaml_file):
@@ -202,10 +200,10 @@ class CalibrationSet(object):
             flux_cal_corr = None
 
         return cls(aaomega_config,
-                   throughput_set=throughput_corr,
+                   throughput_corr=throughput_corr,
                    atm_ext_corr=atm_ext_corr,
-                   telluric_corr_set=telluric_corr,
-                   flux_cal_corr_set=flux_cal_corr)
+                   telluric_corr=telluric_corr,
+                   flux_cal_corr=flux_cal_corr)
 
 
 def create_throughput(config, workdir="."):
@@ -225,7 +223,6 @@ def create_throughput(config, workdir="."):
     elif "rss_set" in config:
         rss_set = [
             instrument_config.koala_ifu.koala_rss(fl) for fl in config["rss_set"]]
-        
         # Correct wavelength shifts when using Twilight exposures
         if "WaveOffsetCorrect" in config:
             kwargs = get_kwargs(config["WaveOffsetCorrect"])
@@ -257,6 +254,7 @@ def create_stellar_cal_set(config, throughput_corr=None, atm_ext_corr=None, work
         fl) for fl in config["rss_set"]]
     vprint(f"Number of input std. stars: {len(rss_set)}")
 
+    # If requested, first correct for wavelength offset
     if "WaveOffsetCorrect" in config:
         kwargs = get_kwargs(config["WaveOffsetCorrect"])
         for ith, rss in enumerate(rss_set):
