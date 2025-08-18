@@ -1,150 +1,271 @@
 """
-This module contains the tools for preparing the set of calibration objects required for
-reducing a full night of observations.
+Calibration preparation utilities for the KOALA data‑reduction manager
+=====================================================================
 
-The data that conform a `CalibrationSet` are:
-- Fibre throughpupt map: used to correct the inhomogeneities of fibre efficiency.
-- Spectrograph throughput: used to account for wavelength-dependent variations of the
-spectrograph sensitivity.
-- Atmospheric telluric absorption model: a model that corrects the absoprtion of
-light by molecules in the atmosphere.
+This module provides a small orchestration layer around *pykoala* to
+prepare the set of calibration objects required to reduce a full night of
+observations.
 
+Overview
+--------
+A :class:`CalibrationSet` bundles the individual correction objects in the
+order they should be applied to RSS files and datacubes. The typical
+calibration products are:
 
-To build such calibration products, users may use the following data:
-- Fibre throughput:
-    - Twilight flat observations
-    - Dome flat observations
-- Spectrograph throughput:
-    - Observations of standard stars
+- **Fibre throughput map** – corrects fibre‑to‑fibre sensitivity variations.
+- **Spectrograph throughput / spectral response** – accounts for wavelength‑dependent
+  efficiency of the full system.
+- **Atmospheric telluric absorption model** – corrects molecular absorption bands.
+- **Atmospheric extinction** – removes the smooth, airmass‑dependent extinction curve.
+- **(Optional) Wavelength offset correction** – fixes small global shifts
+  (e.g. when using twilight flats or standards).
+
+Data sources
+------------
+To build those products, users typically rely on
+
+- Fibre throughput: twilight‑flat or dome‑flat RSS files.
+- Spectral response: spectrophotometric standard stars.
+
+Quick start
+-----------
+You can build a :class:`CalibrationSet` from a YAML configuration
+(see :meth:`CalibrationSet.from_config_yml`). Example configuration::
+
+    workdir: "."
+    CalibrationSet:
+      ThroughputCorrection:
+        rss_set: ["/path/twilight_RSS_1.fits", "/path/twilight_RSS_2.fits"]
+        # optional wavelength‑offset correction per RSS
+        WaveOffsetCorrect:
+          plot: true
+          nsigma: 5
+      AtmosphericExtinctionCorrection:
+        file: default  # or a path to an extinction curve text file
+      StandardStarsCal:
+        # Either a flat list (single star observed multiple times) ...
+        # rss_set: ["/path/std1_rss1.fits", "/path/std1_rss2.fits"]
+        # ... or a mapping from star name to list of RSS files
+        rss_set:
+          Feige110: ["/path/Feige110_rss1.fits", "/path/Feige110_rss2.fits"]
+        SubstractBackground: true
+        WaveOffsetCorrect:
+          plot: true
+
+The call
+
+>>> calset = CalibrationSet.from_config_yml("config.yml")
+
+returns a ready‑to‑use object containing the available corrections. Apply to a
+list of RSS objects (in place order) using::
+
+    rss_corr = calset.apply(rss_list)
+
+Design notes
+------------
+- The class only stores correction **objects** from *pykoala* and applies
+  them in a user‑defined order (``correct_order``).
+- All constructors perform minimal validation and log non‑fatal issues via
+  :func:`koala_drpipe.vprint`.
 
 """
+from __future__ import annotations
+
 import os
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 import yaml
 
 from astropy import units as u
 
 from pykoala.corrections.flux_calibration import FluxCalibration
-from pykoala.corrections.throughput import Throughput, ThroughputCorrection
-from pykoala.corrections.wavelength import WavelengthCorrection, TelluricWavelengthCorrection
-from pykoala.corrections.sky import TelluricCorrection, combine_telluric_corrections
-from pykoala.corrections.sky import SkyFromObject, SkySubsCorrection
-from pykoala.corrections.atmospheric_corrections import AtmosphericExtCorrection
+from pykoala.corrections.throughput import ThroughputCorrection
+from pykoala.corrections.wavelength import (
+    WavelengthCorrection,
+    TelluricWavelengthCorrection,
+)
+from pykoala.corrections.sky import (
+    TelluricCorrection,
+    combine_telluric_corrections,
+    SkyFromObject,
+    SkySubsCorrection,
+)
+from pykoala.corrections.atmospheric_corrections import AtmosphericExtCorrection, get_adr
 from pykoala.corrections.astrometry import AstrometryCorrection
-from pykoala.corrections.atmospheric_corrections import get_adr
 from pykoala.cubing import CubeInterpolator, build_wcs_from_rss
 
-from koala_drpipe import vprint
-from koala_drpipe import instrument_config
+from koala_drpipe import vprint, instrument_config
 
-def get_kwargs(config):
-    """Check if an input configuration has additional kwargs."""
+__all__ = [
+    "CalibrationSet",
+    "create_throughput",
+    "create_stellar_cal_set",
+    "create_telluric",
+]
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def get_kwargs(config: Any) -> Dict[str, Any]:
+    """Return ``config.get('kwargs', {})`` if *config* is a mapping.
+
+    This is a convenience that lets YAML allow both::
+
+        WaveOffsetCorrect: {plot: true, kwargs: {nsigma: 5}}
+
+    and the simplified::
+
+        WaveOffsetCorrect: {plot: true, nsigma: 5}
+    """
     if isinstance(config, dict):
-        kwargs = config.get("kwargs", {})
-    else:
-        kwargs = {}
-    return kwargs
+        # allow the user to set parameters at the top level or within "kwargs"
+        out = dict(config)
+        out.update(config.get("kwargs", {}))
+        out.pop("kwargs", None)
+        return out
+    return {}
+
 
 class CalibrationSet(object):
-    """Calibration data.
-    
-    This class represents the set of calibrations required for reducing
-    scientific data. A particular NightCalibration is build for a certain configuration
-    of the spectrograph.
+    """Bundle of calibration/correction objects for a KOALA night.
 
+    Parameters
+    ----------
+    aaomega_config : instrument_config.AAOmegaConfig or ``None``
+        Spectrograph configuration. Stored for traceability. It is **not**
+        used directly by this module but may be useful for downstream code.
+    **kwargs : Any
+        Additional attributes to attach to the instance. Most importantly,
+        you may pass previously built corrections under the keys used in
+        :attr:`correct_order` (see below).
 
+    Attributes
+    ----------
+    correct_order : list[str]
+        The attribute names (on this instance) that will be applied in order
+        by :meth:`apply`. Default order is::
+
+            ["throughput_corr", "telluric_corr", "atm_ext_corr", "flux_cal_corr"]
+
+    throughput_corr : :class:`ThroughputCorrection` or ``None``
+    telluric_corr   : :class:`TelluricCorrection` or ``None``
+    wave_corr       : :class:`WavelengthCorrection` or ``None``
+    flux_cal_corr   : :class:`FluxCalibration` or ``None``
+    atm_ext_corr    : :class:`AtmosphericExtCorrection` or ``None``
     """
 
+    # --- aaomega configuration ------------------------------------------------
     @property
-    def aaomega_config(self) -> instrument_config.AAOMegaConfig:
-        """Night calibration AAOmega configuration."""
-        return self._aaomega_config
-    
+    def aaomega_config(self) -> Optional[instrument_config.AAOmegaConfig]:
+        """AAOmega configuration for this calibration set."""
+        return getattr(self, "_aaomega_config", None)
+
     @aaomega_config.setter
-    def aaomega_config(self, value):
+    def aaomega_config(self, value: Optional[instrument_config.AAOmegaConfig]):
         self._aaomega_config = value
 
+    # --- correction objects ---------------------------------------------------
     @property
-    def throughput_corr(self) -> ThroughputCorrection:
-        """List of :class:`ThroughputCorrection`."""
+    def throughput_corr(self) -> Optional[ThroughputCorrection]:
         return getattr(self, "_throughput_corr", None)
 
     @throughput_corr.setter
-    def throughput_corr(self, value):
-        if isinstance(value, ThroughputCorrection):
+    def throughput_corr(self, value: Any) -> None:
+        if isinstance(value, ThroughputCorrection) or value is None:
             self._throughput_corr = value
         else:
-            vprint(f"ThroughputCorrection not set")
+            vprint("ThroughputCorrection not set: wrong type")
 
     @property
-    def telluric_corr(self) -> TelluricCorrection:
-        """List of :class:`TelluricCorrection`."""
-        return self._telluric_corr
-        
+    def telluric_corr(self) -> Optional[TelluricCorrection]:
+        return getattr(self, "_telluric_corr", None)
+
     @telluric_corr.setter
-    def telluric_corr(self, value):
-        if isinstance(value, TelluricCorrection):
+    def telluric_corr(self, value: Any) -> None:
+        if isinstance(value, TelluricCorrection) or value is None:
             self._telluric_corr = value
         else:
-            vprint(f"TelluricCorrection not set")
+            vprint("TelluricCorrection not set: wrong type")
 
     @property
-    def wave_corr(self) -> WavelengthCorrection:
-        """List of :class:`WavelengthCorrection`."""
-        return self._wave_corr
-        
+    def wave_corr(self) -> Optional[WavelengthCorrection]:
+        return getattr(self, "_wave_corr", None)
+
     @wave_corr.setter
-    def wave_corr(self, value):
-        if isinstance(value, WavelengthCorrection):
+    def wave_corr(self, value: Any) -> None:
+        if isinstance(value, WavelengthCorrection) or value is None:
             self._wave_corr = value
         else:
-            vprint(f"WavelengthCorrection not set")
+            vprint("WavelengthCorrection not set: wrong type")
 
     @property
-    def flux_cal_corr(self) -> FluxCalibration:
-        """List of :class:`WavelengthCorrection`."""
-        return self._flux_cal_corr
-        
+    def flux_cal_corr(self) -> Optional[FluxCalibration]:
+        return getattr(self, "_flux_cal_corr", None)
+
     @flux_cal_corr.setter
-    def flux_cal_corr(self, value):
-        if isinstance(value, FluxCalibration):
+    def flux_cal_corr(self, value: Any) -> None:
+        if isinstance(value, FluxCalibration) or value is None:
             self._flux_cal_corr = value
         else:
-            vprint(f"FluxCalibration not set")
+            vprint("FluxCalibration not set: wrong type")
 
     @property
-    def atm_ext_corr(self) -> list:
-        """List of :class:`WavelengthCorrection`."""
-        return self._atm_ext_corr
-        
+    def atm_ext_corr(self) -> Optional[AtmosphericExtCorrection]:
+        return getattr(self, "_atm_ext_corr", None)
+
     @atm_ext_corr.setter
-    def atm_ext_corr(self, value):
-        if isinstance(value, AtmosphericExtCorrection):
+    def atm_ext_corr(self, value: Any) -> None:
+        if isinstance(value, AtmosphericExtCorrection) or value is None:
             self._atm_ext_corr = value
         else:
-            vprint(f"AtmosphericExtCorrection not set")
+            vprint("AtmosphericExtCorrection not set: wrong type")
 
-    def __init__(self, aaomega_config, **kwargs):
+    # --- ctor -----------------------------------------------------------------
+    def __init__(self, aaomega_config: Optional[instrument_config.AAOmegaConfig], **kwargs: Any) -> None:
         self.aaomega_config = aaomega_config
-        for key in kwargs.keys():
-            setattr(self, key, kwargs[key])
-        if "correct_order" not in kwargs:
-            self.correct_order = ["throughput_corr", "telluric_corr",
-                                  "atm_ext_corr", "flux_cal_corr"]
+        for key, val in kwargs.items():
+            setattr(self, key, val)
+        # default correction order (can be overridden via kwargs)
+        if not hasattr(self, "correct_order"):
+            self.correct_order = [
+                "throughput_corr",
+                "telluric_corr",
+                "atm_ext_corr",
+                "flux_cal_corr",
+            ]
 
-    def apply(self, rss, correct_order=None):
-        """Apply the calibrations to a set of RSS."""
-        if correct_order is None:
-            correct_order = self.correct_order
-        
-        for ith in range(len(rss)):
-            for corr_name in correct_order:
-                correction = getattr(self, corr_name, None)
-                if correction is not None:
-                    print(f"Applying correction {corr_name}")
-                    rss[ith] = correction.apply(rss[ith])
-                else:
-                    print(f"Correction {corr_name} not set")
-        return rss
+    def apply(self, rss: Sequence[Any], correct_order: Optional[List[str]] = None) -> List[Any]:
+        """Apply the configured corrections to each RSS in *rss*.
+
+        The method loops over the input sequence and returns a new list with
+        corrected objects. Corrections that are ``None`` are silently skipped.
+
+        Parameters
+        ----------
+        rss : sequence
+            A sequence of RSS‑like objects compatible with the ``apply``
+            methods of the underlying *pykoala* correction classes.
+        correct_order : list[str], optional
+            If given, overrides the instance :attr:`correct_order` for this call.
+
+        Returns
+        -------
+        list
+            The list of corrected RSS objects.
+        """
+        order = list(correct_order) if correct_order is not None else list(self.correct_order)
+        out: List[Any] = []
+        for item in rss:
+            corrected = item
+            for corr_name in order:
+                corr = getattr(self, corr_name, None)
+                if corr is None:
+                    vprint(f"Correction {corr_name} not set – skipping")
+                    continue
+                vprint(f"Applying correction {corr_name}")
+                corrected = corr.apply(corrected)
+            out.append(corrected)
+        return out
 
     @classmethod
     def from_config_yml(cls, yaml_file):
@@ -189,6 +310,7 @@ class CalibrationSet(object):
             atm_ext_corr = None
 
         if "StandardStarsCal" in config["CalibrationSet"]:
+            print("Preparing StandardStarsCal set")
             telluric_corr, flux_cal_corr = create_stellar_cal_set(
                 config["CalibrationSet"]["StandardStarsCal"],
                 throughput_corr,
@@ -347,7 +469,7 @@ def create_stellar_cal_set(config, throughput_corr=None, atm_ext_corr=None, work
         star_cubes.append(cube)
 
     # Flux calibration
-    extract_args = dict(wave_range=None, wave_window=5, plot=True)
+    extract_args = dict(wave_range=None, wave_window=None, plot=True)
     response_params = dict(pol_deg=7, spline=False, median_filter_n=10,
                            plot=True)
 
