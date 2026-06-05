@@ -154,7 +154,6 @@ class CalibrationSet(object):
     atm_ext_corr    : :class:`AtmosphericExtCorrection` or ``None``
     """
 
-    # --- aaomega configuration ------------------------------------------------
     @property
     def aaomega_config(self) -> Optional[instrument_config.AAOmegaConfig]:
         """AAOmega configuration for this calibration set."""
@@ -164,7 +163,6 @@ class CalibrationSet(object):
     def aaomega_config(self, value: Optional[instrument_config.AAOmegaConfig]):
         self._aaomega_config = value
 
-    # --- correction objects ---------------------------------------------------
     @property
     def throughput_corr(self) -> Optional[ThroughputCorrection]:
         return getattr(self, "_throughput_corr", None)
@@ -220,7 +218,6 @@ class CalibrationSet(object):
         else:
             vprint("AtmosphericExtCorrection not set: wrong type")
 
-    # --- ctor -----------------------------------------------------------------
     def __init__(self, aaomega_config: Optional[instrument_config.AAOmegaConfig], **kwargs: Any) -> None:
         self.aaomega_config = aaomega_config
         for key, val in kwargs.items():
@@ -268,210 +265,209 @@ class CalibrationSet(object):
         return out
 
     @classmethod
-    def from_config_yml(cls, yaml_file):
-        """Create a CalibrationSet from an input configuration yaml file."""
-        with open(yaml_file, "r") as file:
-            config = yaml.safe_load(file)
+    def from_config_yml(cls, yaml_file: str) -> CalibrationSet:
+        """Create a :class:`CalibrationSet` from a YAML file.
+
+        See the module docstring for an example layout.
+        """
+        with open(yaml_file, "r") as fh:
+            config = yaml.safe_load(fh)
         return cls.from_config_dict(config)
 
     @classmethod
-    def from_config_dict(cls, config):
+    def from_config_dict(cls, config: Dict[str, Any]) -> CalibrationSet:
         vprint("Initialising Corrections from config file")
-        # Initialise throughput
-        if "workdir" in config:
-            workdir = config["workdir"]
-        else:
-             workdir="."
 
-        # if "from_rss" in config["AAOmegaConfig"]:
-        #     aaomega_config = instrument_config.AAOMegaConfig.from_fits(
-        #         config["AAOmegaConfig"]["from_rss"])
-        # else:
-        #     raise ValueError("User must include a configuration of AAOmega")
+        workdir = config.get("workdir", ".")
+        cset_cfg = config.get("CalibrationSet", {})
 
-        # Initialise corrections
-        if "ThroughputCorrection" in config["CalibrationSet"]:
-            throughput_corr = create_throughput(
-                config["CalibrationSet"]["ThroughputCorrection"],
-                workdir=workdir)
-        else:
-            throughput_corr = None
-        
-        if "AtmosphericExtinctionCorrection" in config["CalibrationSet"]:
-            if config["CalibrationSet"]["AtmosphericExtinctionCorrection"
-                                        ]["file"].lower() == "default":
+        # Throughput (twilight/dome flats)
+        throughput_corr = None
+        if "ThroughputCorrection" in cset_cfg:
+            throughput_corr = create_throughput(cset_cfg["ThroughputCorrection"], workdir=workdir)
+
+        # Atmospheric extinction
+        atm_ext_corr = None
+        if "AtmosphericExtinctionCorrection" in cset_cfg:
+            ext_cfg = cset_cfg["AtmosphericExtinctionCorrection"]
+            ext_file = str(ext_cfg.get("file", "default")).lower()
+            if ext_file == "default":
                 atm_ext_corr = AtmosphericExtCorrection.from_text_file(
-                    AtmosphericExtCorrection.default_extinction)
+                    AtmosphericExtCorrection.default_extinction
+                )
             else:
-                atm_ext_corr = AtmosphericExtCorrection.from_text_file(
-                    config["CalibrationSet"]["AtmosphericExtinctionCorrection"
-                                        ]["file"])
-        else:
-            atm_ext_corr = None
+                atm_ext_corr = AtmosphericExtCorrection.from_text_file(ext_cfg["file"])
 
-        if "StandardStarsCal" in config["CalibrationSet"]:
-            print("Preparing StandardStarsCal set")
+        # Standard‑stars set (telluric + flux calibration)
+        telluric_corr = None
+        flux_cal_corr = None
+        if "StandardStarsCal" in cset_cfg:
+            vprint("Preparing StandardStarsCal set")
             telluric_corr, flux_cal_corr = create_stellar_cal_set(
-                config["CalibrationSet"]["StandardStarsCal"],
-                throughput_corr,
-                atm_ext_corr,
-                workdir=workdir)
+                cset_cfg["StandardStarsCal"], throughput_corr, atm_ext_corr, workdir=workdir
+            )
 
-        else:
-            telluric_corr = None
-            flux_cal_corr = None
-
-        return cls(None,
-                   throughput_corr=throughput_corr,
-                   atm_ext_corr=atm_ext_corr,
-                   telluric_corr=telluric_corr,
-                   flux_cal_corr=flux_cal_corr)
+        return cls(
+            aaomega_config=None,
+            throughput_corr=throughput_corr,
+            atm_ext_corr=atm_ext_corr,
+            telluric_corr=telluric_corr,
+            flux_cal_corr=flux_cal_corr,
+        )
 
 
-def create_throughput(config, workdir="."):
-    """Create a thoughput correction from an input configuration.
-    
-    Parameters
-    ----------
-    config : dict
-        Configuration for creating the :class:`ThroughputCorrection`.
+# ---------------------------------------------------------------------------
+# builders
+# ---------------------------------------------------------------------------
 
-    Returns
-    -------
-    throuput_corr : :class:`ThroughputCorrection`
+def create_throughput(config: Dict[str, Any], workdir: str = ".") -> ThroughputCorrection:
+    """Create a :class:`ThroughputCorrection` from configuration.
+
+    Supported forms
+    ---------------
+    - ``{"file": "/path/to/throughput.fits"}``
+    - ``{"rss_set": ["/path/twilight1.fits", ...], "WaveOffsetCorrect": {...}}``
     """
+    # From a pre‑computed file
     if "file" in config:
-        ThroughputCorrection.from_file(config["file"])
-    elif "rss_set" in config:
-        rss_set = [
-            instrument_config.koala_ifu.koala_rss(fl) for fl in config["rss_set"]]
-        # Correct wavelength shifts when using Twilight exposures
+        return ThroughputCorrection.from_file(config["file"])  # type: ignore[return-value]
+
+    # From a set of RSS files (twilights/domes)
+    if "rss_set" in config:
+        rss_set = [instrument_config.koala_ifu.koala_rss(fl) for fl in config["rss_set"]]
+
+        # Optional: fix wavelength offsets per RSS before measuring throughput
         if "WaveOffsetCorrect" in config:
-            kwargs = get_kwargs(config["WaveOffsetCorrect"])
+            wcfg = get_kwargs(config["WaveOffsetCorrect"])  # merge possible kwargs
             for ith, rss in enumerate(rss_set):
-                wave_corr, figures = TelluricWavelengthCorrection.from_rss(
-                    rss, **kwargs)
+                wave_corr, figures = TelluricWavelengthCorrection.from_rss(rss, **wcfg)
                 rss = wave_corr.apply(rss)
+                rss_set[ith] = rss
                 if figures is not None:
                     figures[0].savefig(
-                        os.path.join(
-                            workdir,
-                            f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_wave_offset.png"),
-                            dpi=200, bbox_inches="tight")
+                        os.path.join(workdir, f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_wave_offset.png"),
+                        dpi=200,
+                        bbox_inches="tight",
+                    )
                     figures[1].savefig(
-                        os.path.join(
-                            workdir,
-                            f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_offset_fibre_map.png"),
-                            dpi=200, bbox_inches="tight")
-        kwargs = get_kwargs(config)
-        throughput_corr = ThroughputCorrection.from_rss(rss_set, **kwargs)
-    return throughput_corr
+                        os.path.join(workdir, f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_offset_fibre_map.png"),
+                        dpi=200,
+                        bbox_inches="tight",
+                    )
 
-def create_stellar_cal_set(config, throughput_corr=None, atm_ext_corr=None, workdir="."):
-    """Build the calibration set from standard stars."""
+        kwargs = get_kwargs(config)
+        kwargs.pop("rss_set")
+        return ThroughputCorrection.from_rss(rss_set, **kwargs)
+
+    raise ValueError("Throughput configuration must include either 'file' or 'rss_set'.")
+
+
+def create_stellar_cal_set(
+    config: Dict[str, Any],
+    throughput_corr: Optional[ThroughputCorrection] = None,
+    atm_ext_corr: Optional[AtmosphericExtCorrection] = None,
+    workdir: str = ".",
+) -> tuple[TelluricCorrection, FluxCalibration]:
+    """Build telluric and flux‑calibration corrections from standard stars.
+
+    The function accepts either a flat list of RSS files (single star) or a
+    mapping from star name to list of RSS files.
+    """
     vprint("Preparing calibrations from standard stars")
-    if isinstance(config["rss_set"], list):
+
+    # Normalise input to a mapping {star_name: [rss, ...]}
+    if isinstance(config.get("rss_set"), list):
         rss_set = [instrument_config.koala_ifu.koala_rss(fl) for fl in config["rss_set"]]
         stars = {rss_set[0].info["name"]: rss_set}
     else:
-        stars = {name: [instrument_config.koala_ifu.koala_rss(
-            fl) for fl in files] for name, files in config["rss_set"].items()}
+        stars = {
+            name: [instrument_config.koala_ifu.koala_rss(fl) for fl in files]
+            for name, files in config.get("rss_set", {}).items()
+        }
 
-    # rss_config = [instrument_config.ObservationConfig.from_fits(
-    #     fl) for fl in config["rss_set"]]
     vprint(f"Number of input std. stars: {len(stars)}")
     star_cubes = []
-    for std_name, star_rss in stars.items():
-        # If requested, first correct for wavelength offset
 
+    for std_name, star_rss in stars.items():
+        # Preprocess each RSS: wavelength offset, throughput, extinction, sky
         for ith, rss in enumerate(star_rss):
             if "WaveOffsetCorrect" in config:
-                wave_corr, figures = TelluricWavelengthCorrection.from_rss(
-                    rss, **get_kwargs(config["WaveOffsetCorrect"]))
+                wcfg = get_kwargs(config["WaveOffsetCorrect"])
+                wave_corr, figures = TelluricWavelengthCorrection.from_rss(rss, **wcfg)
                 rss = wave_corr.apply(rss)
+                star_rss[ith] = rss
                 if figures is not None:
                     figures[0].savefig(
-                        os.path.join(
-                            workdir,
-                            f"{std_name}_std_wavecorr_{ith}_rss_wave_offset.png"),
-                            dpi=200, bbox_inches="tight")
+                        os.path.join(workdir, f"{std_name}_std_wavecorr_{ith}_rss_wave_offset.png"),
+                        dpi=200,
+                        bbox_inches="tight",
+                    )
                     figures[1].savefig(
-                        os.path.join(
-                            workdir,
-                            f"{std_name}_std_wavecorr_{ith}_rss_offset_fibre_map.png"),
-                            dpi=200, bbox_inches="tight")
+                        os.path.join(workdir, f"{std_name}_std_wavecorr_{ith}_rss_offset_fibre_map.png"),
+                        dpi=200,
+                        bbox_inches="tight",
+                    )
             if throughput_corr is not None:
                 vprint("Applying ThroughputCorrection to RSS")
                 rss = throughput_corr.apply(rss)
+                star_rss[ith] = rss
             if atm_ext_corr is not None:
                 vprint("Applying AtmosphericExtinctionCorrection to RSS")
                 rss = atm_ext_corr.apply(rss)
+                star_rss[ith] = rss
 
             if config.get("SubstractBackground", True):
-                
-                skymodel = SkyFromObject(rss, bckgr_estimator='mad',
-                                         source_mask_nsigma=3, remove_cont=False)
+                skymodel = SkyFromObject(rss, bckgr_estimator="mad", source_mask_nsigma=3, remove_cont=False)
                 skycorrection = SkySubsCorrection(skymodel)
                 rss, fig = skycorrection.apply(rss, plot=True)
-                fig.savefig(
-                    os.path.join(
-                        workdir,
-                        f"{std_name}_std_{ith}_rss_sky_substract.png"),
-                        dpi=200, bbox_inches="tight")
+                star_rss[ith] = rss
+                if fig is not None:
+                    fig.savefig(os.path.join(workdir, f"{std_name}_std_{ith}_rss_sky_substract.png"), dpi=200, bbox_inches="tight")
 
-        # Register the RSS
+        # Register RSS and build a small cube per standard
         astrom_corr = AstrometryCorrection()
-        adr_corr_set = []
-
-        offsets, fig = astrom_corr.register_centroids(star_rss,
-                                                      object_name=std_name,
-                                                qc_plot=True, centroider='gauss')
-        fig.savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_{std_name}_register.png"),
-                        dpi=200, bbox_inches="tight")
+        offsets, fig = astrom_corr.register_centroids(
+            star_rss, object_name=std_name, qc_plot=True, centroider="gauss"
+        )
+        if fig is not None:
+            fig.savefig(os.path.join(workdir, f"stdcalset_{std_name}_register.png"), dpi=200, bbox_inches="tight")
 
         for ith, (rss, offset) in enumerate(zip(star_rss, offsets)):
             astrom_corr.apply(rss, offset=offset)
-            adr_pol_ra, adr_pol_dec, fig = get_adr(rss, max_adr=0.5, pol_deg=2,
-                                                   plot=True)
-            adr_corr_set.append([adr_pol_ra, adr_pol_dec])
-            fig.savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_{std_name}_adr.png"),
-                        dpi=200, bbox_inches="tight")
+            adr_pol_ra, adr_pol_dec, fig = get_adr(rss, max_adr=0.5, pol_deg=2, plot=True)
+            if fig is not None:
+                fig.savefig(os.path.join(workdir, f"stdcalset_{std_name}_adr.png"), dpi=200, bbox_inches="tight")
 
-        wcs = build_wcs_from_rss(star_rss, spatial_pix_size= 0.5 * u.arcsec,
-                                spectra_pix_size=rss.wavelength[1] - rss.wavelength[0])
-        interpolator = CubeInterpolator(rss_set=star_rss, wcs=wcs, kernel_scale=1.0,
-                                        qc_plots=True)
+        wcs = build_wcs_from_rss(
+            star_rss,
+            spatial_pix_size=0.5 * u.arcsec,
+            spectra_pix_size=star_rss[0].wavelength[1] - star_rss[0].wavelength[0],
+        )
+        interpolator = CubeInterpolator(rss_set=star_rss, wcs=wcs, kernel_scale=1.0, qc_plots=True)
         cube = interpolator.build_cube(cube_info=dict(name=std_name))
-        interpolator.cube_plots["stack_cube"].savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_{std_name}_cube_qc.png"),
-                        dpi=200, bbox_inches="tight")
-        interpolator.cube_plots["weights"].savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_{std_name}_cube_weights.png"),
-                        dpi=200, bbox_inches="tight")
-        # Telluric correction
+        if "stack_cube" in interpolator.cube_plots:
+            interpolator.cube_plots["stack_cube"].savefig(
+                os.path.join(workdir, f"stdcalset_{std_name}_cube_qc.png"), dpi=200, bbox_inches="tight"
+            )
+        if "weights" in interpolator.cube_plots:
+            interpolator.cube_plots["weights"].savefig(
+                os.path.join(workdir, f"stdcalset_{std_name}_cube_weights.png"), dpi=200, bbox_inches="tight"
+            )
+
+        # Telluric correction from the standard star cube
         telluric_corr, fig = TelluricCorrection.from_model(cube, plot=True)
-        fig.savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_{cube.info['name']}_telluric_correction.png"),
-                        dpi=200, bbox_inches="tight")
+        if fig is not None:
+            fig.savefig(
+                os.path.join(workdir, f"stdcalset_{cube.info['name']}_telluric_correction.png"),
+                dpi=200,
+                bbox_inches="tight",
+            )
         cube = telluric_corr.apply(cube)
         star_cubes.append(cube)
 
-    # Flux calibration
+    # Flux calibration (auto pipeline). Optionally combine multiple stars into a master response.
     extract_args = dict(wave_range=None, wave_window=None, plot=True)
-    response_params = dict(pol_deg=7, spline=False, median_filter_n=10,
-                           plot=True)
+    response_params = dict(pol_deg=7, spline=False, median_filter_n=10, plot=True)
 
     flux_cal_results, _, master_flux_corr = FluxCalibration.auto(
         data=star_cubes,
@@ -479,48 +475,36 @@ def create_stellar_cal_set(config, throughput_corr=None, atm_ext_corr=None, work
         fnames=None,
         extract_args=extract_args,
         response_params=response_params,
-        combine=True)
+        combine=True,
+    )
 
     for name in stars.keys():
-        flux_cal_results[name]['extraction']['figure'].savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_{name}_extraction.png"),
-                        dpi=200, bbox_inches="tight")
-        flux_cal_results[name]['response_fig'].savefig(
-                    os.path.join(
-                        workdir,
-                        f"stdcalset_{name}_spectral_response.png"),
-                        dpi=200, bbox_inches="tight")
+        flux_cal_results[name]["extraction"]["figure"].savefig(
+            os.path.join(workdir, f"stdcalset_{name}_extraction.png"), dpi=200, bbox_inches="tight"
+        )
+        flux_cal_results[name]["response_fig"].savefig(
+            os.path.join(workdir, f"stdcalset_{name}_spectral_response.png"), dpi=200, bbox_inches="tight"
+        )
+
+    # Return: a representative telluric (last computed) and the *combined* flux calibration
     return telluric_corr, master_flux_corr
 
 
-def create_telluric(config, workdir="."):
+def create_telluric(config: Dict[str, Any], workdir: str = ".") -> TelluricCorrection:
+    """Create a :class:`TelluricCorrection` from configuration.
+
+    Supported forms
+    ---------------
+    - ``{"file": "/path/to/telluric.txt"}``  (text model understood by pykoala)
+    - ``{"files": ["/path/a.txt", "..."], "combine": "median"}``  (combine multiple)
+
+    """
     if "file" in config:
-        TelluricCorrection.from_text_file(config["file"])
-    elif "rss_set" in config:
-        rss_set = [
-            instrument_config.koala_ifu.koala_rss(fl) for fl in config["rss_set"]]
-        
-        # Correct wavelength shifts when using Twilight exposures
-        if "WaveOffsetCorrect" in config and config["WaveOffsetCorrect"]:
-            for ith, rss in enumerate(rss_set):
-                wave_corr, figures = TelluricWavelengthCorrection.from_rss(
-                    rss, plot=True)
-                rss = wave_corr.apply(rss)
-                figures[0].savefig(
-                    os.path.join(
-                        workdir,
-                        f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_wave_offset.png"),
-                        dpi=200, bbox_inches="tight")
-                figures[1].savefig(
-                    os.path.join(
-                        workdir,
-                        f"throughput_wavecorr_{ith}_rss_{rss.info['name']}_offset_fibre_map.png"),
-                        dpi=200, bbox_inches="tight")
-        if "kwargs" in config:
-            kwargs = config["kwargs"]
-        else:
-            kwargs = {}
-        throughput_corr = ThroughputCorrection.from_rss(rss_set, **kwargs)
-    return throughput_corr
+        return TelluricCorrection.from_text_file(config["file"])  # type: ignore[return-value]
+
+    if "files" in config:
+        models = [TelluricCorrection.from_text_file(f) for f in config["files"]]
+        method = str(config.get("combine", "median")).lower()
+        return combine_telluric_corrections(models, method=method)
+
+    raise ValueError("Telluric configuration must include 'file' or 'files'.")

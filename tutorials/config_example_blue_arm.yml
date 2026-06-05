@@ -10,10 +10,10 @@ CalibrationSet:
   # List the flat fields
     rss_set:
           - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/580V/27feb10009red.fits"
-    WaveOffsetCorrect:
-      # Waveoffset kwargs
-      kwargs:
-        plot : True  
+    # WaveOffsetCorrect:
+    #   # Waveoffset kwargs
+    #   kwargs:
+    #     plot : True  
     
     # Throuput kwargs
     kwargs:
@@ -24,11 +24,27 @@ CalibrationSet:
 
   StandardStarsCal:
     rss_set:
+      Hilt600:
           - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/580V/27feb10028red.fits"
           - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/580V/27feb10029red.fits"
           - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/580V/27feb10030red.fits"
-    WaveOffsetCorrect:
-      kwargs:
-        plot: True
-        median_smooth: 10
-        pol_fit_deg: 3
+    # WaveOffsetCorrect:
+    #   kwargs:
+    #     plot: True
+    #     median_smooth: 10
+    #     pol_fit_deg: 3
+
+
+# Set of science frames
+
+ScienceSet:
+  files:
+    he-2-10:
+      - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/580V/27feb10034red.fits"
+      - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/580V/27feb10035red.fits"
+      - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/580V/27feb10036red.fits"
+
+  cubing:
+    kernel: "ParabolicKernel"
+    kernel_kwargs:
+      kernel_scale: 1.0
