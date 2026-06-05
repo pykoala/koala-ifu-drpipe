@@ -1,0 +1,26 @@
+workdir: calset-test
+# Configuration of AAOmega
+AAOmegaConfig:
+  from_rss:
+    "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/385R/27feb20009red.fits"
+
+# List the corrections that you want to include in the CalibrationSet
+CalibrationSet:
+  ThroughputCorrection:
+  # List the flat fields
+    rss_set:
+          - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/385R/27feb20009red.fits"
+    WaveOffsetCorrect : False
+    kwargs:
+    # Use a median filter to smooth the throughput across the dispersion axis
+      medfilt: 20
+
+  AtmosphericExtinctionCorrection:
+    file: default
+
+  StandardStarsCal:
+    rss_set:
+          - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/385R/27feb20028red.fits"
+          - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/385R/27feb20029red.fits"
+          - "/home/pcorchoc/Develop/pykoala-tutorials/tutorials/data/koala/385R/27feb20030red.fits"
+    WaveOffsetCorrect : False
